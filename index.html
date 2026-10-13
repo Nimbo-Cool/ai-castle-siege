@@ -73,8 +73,9 @@
             <p>2️⃣ 每一題<b>全部組同時作答</b>：各組派代表到螢幕前，按自己那一排的答案。按下去就鎖定，別組看不到你選什麼。</p>
             <p>3️⃣ 答對的組可以行動，<b class="text-amber-300">越快答對越先行動</b>；最快答對的組 ⚡ 威力加倍。</p>
             <p>4️⃣ 行動三選一：⚔️ <b>攻擊</b>別組城堡扣血、🛠️ <b>修城</b>補血、🛡️ <b>護盾</b>擋下下一次攻擊。</p>
+            <p>🎯 <b class="text-amber-300">只能攻擊分數比自己高、或和自己同分的組</b>（只有 2 組時不限制）。已經是第一名、沒有人可以打時，⚔️ 攻擊會變成 💎 <b>收集寶石</b> 加分。</p>
             <p>5️⃣ 把別組城堡打到 0 就算<b>擊倒</b>，拿到 ⭐ 一顆；被擊倒的城堡會重建回 5 血，繼續比賽。</p>
-            <p>6️⃣ 題目越後面越難。比賽結束時，<b>分數 = 城堡血量 ＋ ⭐ × 5</b>，最高分的組獲勝！</p>
+            <p>6️⃣ 題目越後面越難。比賽結束時，<b>分數 = 城堡血量 ＋ ⭐ × 5 ＋ 💎</b>，最高分的組獲勝！</p>
             <div class="text-right"><button onclick="closeRules()" class="px-6 py-2.5 rounded-xl bg-emerald-500 text-slate-900 font-black">知道了</button></div>
         </div>
     </div>
@@ -199,6 +200,13 @@
                             </select>
                         </div>
                         <p id="timeEstimate" class="text-[11px] text-slate-400 text-right"></p>
+                        <div class="flex items-center justify-between gap-3">
+                            <label class="text-xs font-bold text-sky-300">🎯 攻擊規則</label>
+                            <select id="ruleSelect" onchange="saveGroupSettings()" class="bg-slate-800 border border-slate-600 p-2 rounded-lg text-xs font-bold">
+                                <option value="up">只能打同分或更高分的組（建議）</option>
+                                <option value="free">自由攻擊</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
@@ -704,6 +712,7 @@
         })();
         // 比賽長度以「全班總題數」計算，每組回合數依組數自動換算，2 組和 6 組玩起來一樣久
         let gameLength = Number(localStorage.getItem('castle_length') ?? 12);
+        let attackRule = localStorage.getItem('castle_rule') || 'up';
         function roundsFor(n) { return gameLength ? Math.max(2, Math.round(gameLength / n)) : 0; }
 
         function teamName(i) { return (groupNames[i] && groupNames[i].trim()) || TEAM_STYLES[i].label; }
@@ -725,6 +734,7 @@
                 </label>`;
             }).join('');
             $('roundSelect').value = String(gameLength);
+            $('ruleSelect').value = attackRule;
             renderTimeEstimate();
         }
         // 每題全組作答＋公布＋行動，約 70 秒
@@ -743,6 +753,8 @@
             localStorage.setItem('terr_names', JSON.stringify(groupNames));
             gameLength = Number($('roundSelect').value);
             localStorage.setItem('castle_length', gameLength);
+            attackRule = $('ruleSelect').value;
+            localStorage.setItem('castle_rule', attackRule);
             renderTimeEstimate();
         }
 
@@ -1080,7 +1092,14 @@ ${JSON.stringify(list)}
         // 全組同時作答，代表要走到螢幕前，每題多給 5 秒
         function timeFor(tier) { return QUESTION_TIME + 5 + (tier === 3 ? 5 : 0); }
 
-        function teamScore(i) { const t = game.teams[i]; return t.hp + t.stars * 5; }
+        function teamScore(i) { const t = game.teams[i]; return t.hp + t.stars * 5 + t.gems; }
+
+        // 🎯 可以攻擊的城堡：3 組以上時，只能打分數比自己高或同分的組，避免大家聯手欺負落後的組
+        function attackTargets(team) {
+            const others = game.teams.map((_, i) => i).filter(i => i !== team);
+            if (attackRule === 'free' || game.n <= 2) return others;
+            return others.filter(i => teamScore(i) >= teamScore(team));
+        }
         function leaders() {
             const best = Math.max(...game.teams.map((_, i) => teamScore(i)));
             return game.teams.map((_, i) => i).filter(i => teamScore(i) === best);
@@ -1099,7 +1118,7 @@ ${JSON.stringify(list)}
                 n: groupCount,
                 totalQ: gameLength,
                 qIndex: 0,
-                teams: Array.from({ length: groupCount }, () => ({ hp: MAX_HP, shield: false, stars: 0, correct: 0, wrong: 0, fastest: 0, falls: 0 })),
+                teams: Array.from({ length: groupCount }, () => ({ hp: MAX_HP, shield: false, stars: 0, gems: 0, correct: 0, wrong: 0, fastest: 0, falls: 0 })),
                 phase: 'idle',
                 cur: null,
                 actors: [],
@@ -1130,11 +1149,12 @@ ${JSON.stringify(list)}
             wrap.innerHTML = '';
             game.teams.forEach((t, i) => {
                 const s = TEAM_STYLES[i];
-                const isTarget = game.targeting && actor && i !== actor.team;
+                const isTarget = game.targeting && actor && attackTargets(actor.team).includes(i);
+                const dimmed = game.targeting && actor && !isTarget && i !== actor.team;
                 const isActor = actor && actor.team === i;
                 const el = document.createElement('div');
                 el.id = `castle${i}`;
-                el.className = `castle relative rounded-2xl border-4 ${compact ? 'p-2' : 'p-3'} transition ${isTarget ? 'cell-target cursor-pointer' : ''} ${isActor ? 'scale-[1.03]' : ''}`;
+                el.className = `castle relative rounded-2xl border-4 ${compact ? 'p-2' : 'p-3'} transition ${isTarget ? 'cell-target cursor-pointer' : ''} ${isActor ? 'scale-[1.03]' : ''} ${dimmed ? 'opacity-30' : ''}`;
                 el.style.borderColor = isActor ? '#fde047' : s.color;
                 el.style.background = `linear-gradient(160deg, ${s.dark}, #0f172a)`;
                 if (isTarget) el.style.setProperty('--gc', '#f87171');
@@ -1146,7 +1166,7 @@ ${JSON.stringify(list)}
                             ${game.n > 5 ? '' : `<span class="${compact ? 'text-2xl' : 'text-3xl md:text-4xl'}">${t.hp <= 3 ? '🏚️' : '🏰'}</span>`}
                             <div class="min-w-0">
                                 <div class="font-black ${compact ? 'text-sm md:text-base' : 'text-base md:text-xl'} truncate" style="color:${s.color}">${s.emoji} ${escapeHtml(teamName(i))}</div>
-                                <div class="text-xs md:text-sm text-amber-300 font-black ${compact ? 'h-4' : 'h-5'}">${'⭐'.repeat(t.stars)}${lead.length === 1 && lead[0] === i && game.qIndex > 0 ? ' 👑' : ''}</div>
+                                <div class="text-xs md:text-sm text-amber-300 font-black ${compact ? 'h-4' : 'h-5'}">${'⭐'.repeat(t.stars)}${t.gems ? ` 💎${t.gems}` : ''}${lead.length === 1 && lead[0] === i && game.qIndex > 0 ? ' 👑' : ''}</div>
                             </div>
                         </div>
                         <div class="text-right shrink-0">
@@ -1352,11 +1372,15 @@ ${JSON.stringify(list)}
                     <div class="text-base md:text-lg font-black ${a.power > 1 ? 'text-amber-300' : 'text-slate-300'}">${a.power > 1 ? '⚡ 最快答對，威力 ×2！' : '答對了！選一個行動'}</div>
                 </div>
                 ${game.targeting
-                    ? `<div class="text-2xl md:text-3xl font-black text-rose-300 mb-4">🎯 點上面要攻擊的城堡！</div>
+                    ? `<div class="text-2xl md:text-3xl font-black text-rose-300 mb-2">🎯 點上面要攻擊的城堡！</div>
+                       ${attackRule === 'up' && game.n > 2 ? '<div class="text-sm font-bold text-slate-400 mb-4">只能攻擊分數比你們高或同分的城堡（變暗的不能打）</div>' : ''}
                        <button onclick="cancelTarget()" class="px-6 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 font-bold">↩️ 換別的行動</button>`
                     : `<div class="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4">
-                        <button onclick="chooseAttack()" class="py-6 rounded-2xl bg-gradient-to-br from-rose-500 to-red-700 text-white font-black shadow-xl active:scale-95 transition">
-                            <div class="text-5xl">⚔️</div><div class="text-2xl mt-1">攻擊</div><div class="text-sm opacity-90">別組城堡 −${a.power} 血</div></button>
+                        ${attackTargets(a.team).length
+                            ? `<button onclick="chooseAttack()" class="py-6 rounded-2xl bg-gradient-to-br from-rose-500 to-red-700 text-white font-black shadow-xl active:scale-95 transition">
+                            <div class="text-5xl">⚔️</div><div class="text-2xl mt-1">攻擊</div><div class="text-sm opacity-90">別組城堡 −${a.power} 血</div></button>`
+                            : `<button onclick="doGems()" class="py-6 rounded-2xl bg-gradient-to-br from-fuchsia-500 to-purple-700 text-white font-black shadow-xl active:scale-95 transition">
+                            <div class="text-5xl">💎</div><div class="text-2xl mt-1">收集寶石</div><div class="text-sm opacity-90">你們領先中，沒有可以打的城堡：+${gemAmount(a)} 分</div></button>`}
                         <button onclick="doRepair()" ${t.hp >= MAX_HP ? 'disabled' : ''} class="py-6 rounded-2xl bg-gradient-to-br from-emerald-500 to-green-700 text-white font-black shadow-xl active:scale-95 transition disabled:opacity-30">
                             <div class="text-5xl">🛠️</div><div class="text-2xl mt-1">修城</div><div class="text-sm opacity-90">${t.hp >= MAX_HP ? '血量已滿' : `自己城堡 +${a.power} 血`}</div></button>
                         <button onclick="doShield()" ${t.shield ? 'disabled' : ''} class="py-6 rounded-2xl bg-gradient-to-br from-sky-500 to-blue-700 text-white font-black shadow-xl active:scale-95 transition disabled:opacity-30">
@@ -1366,13 +1390,25 @@ ${JSON.stringify(list)}
             </div>`;
         }
 
-        function chooseAttack() { if (game.busy) return; game.targeting = true; SFX.select(); renderAll(); }
+        function chooseAttack() { if (game.busy) return; if (!attackTargets(game.actors[game.actorIdx].team).length) return; game.targeting = true; SFX.select(); renderAll(); }
+
+        function gemAmount(a) { return a.power > 1 ? 3 : 2; }
+        function doGems() {
+            if (game.busy || game.phase !== 'action') return;
+            const a = game.actors[game.actorIdx], t = game.teams[a.team];
+            const g = gemAmount(a);
+            t.gems += g;
+            renderAll();
+            floatText(a.team, `💎+${g}`, '#e879f9');
+            SFX.chest();
+            advanceActor();
+        }
         function cancelTarget() { game.targeting = false; renderAll(); }
 
         function doAttack(target) {
             if (game.phase !== 'action' || !game.targeting || game.busy) return;
             const a = game.actors[game.actorIdx];
-            if (target === a.team) return;
+            if (target === a.team || !attackTargets(a.team).includes(target)) return;
             const tt = game.teams[target];
             game.targeting = false;
             if (tt.shield) {
@@ -1473,7 +1509,7 @@ ${JSON.stringify(list)}
                     </div>
                     <div class="grid grid-cols-4 gap-2 mt-2 text-center text-sm font-bold">
                         <div class="bg-slate-900/60 rounded-lg py-1.5">🏰 血量<br>${t.hp}</div>
-                        <div class="bg-slate-900/60 rounded-lg py-1.5 text-amber-300">⭐ 擊倒<br>${t.stars}</div>
+                        <div class="bg-slate-900/60 rounded-lg py-1.5 text-amber-300">⭐ 擊倒 ${t.stars}<br>💎 寶石 ${t.gems}</div>
                         <div class="bg-slate-900/60 rounded-lg py-1.5 text-green-400">✔ 答對<br>${t.correct}</div>
                         <div class="bg-slate-900/60 rounded-lg py-1.5 text-sky-300">答對率<br>${rate}%</div>
                     </div>
@@ -1483,7 +1519,7 @@ ${JSON.stringify(list)}
             $('menuDesc').innerHTML = (winners.length > 1
                 ? `<span class="text-xl font-black text-amber-300">🤝 ${winners.map(teamName).map(escapeHtml).join('、')} 同分並列第一！</span>`
                 : `<span class="text-xl font-black" style="color:${TEAM_STYLES[winners[0]].color}">🏆 恭喜 ${escapeHtml(teamName(winners[0]))} 守住王座！</span>`) +
-                `<div class="text-xs text-slate-400 mt-1">分數 = 城堡血量 ＋ ⭐ × 5</div>`;
+                `<div class="text-xs text-slate-400 mt-1">分數 = 城堡血量 ＋ ⭐ × 5 ＋ 💎</div>`;
             menuParts('resultPanel');
             SFX.win();
         }
